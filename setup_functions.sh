@@ -336,22 +336,23 @@ install_flashlight() {
         log "[INFO] nvcc not found. Switching to CPU-only build."
         use_cuda_flag="-DFLASHLIGHT_USE_CUDA=OFF"
         export USE_CUDA=0
+    fi
     # Explicitly point CMake to the Python executable in the venv for robustness
     local python_executable="$VENV_PATH/bin/python"
     cmake .. -DCMAKE_BUILD_TYPE=Release \
              -DPYTHON_EXECUTABLE="$python_executable" \
              "$flashlight_python_flag" \
-             "$use_cuda_flag" \
+             "$use_cuda_flag"
 
     # Build the C++ library AND Python bindings
     log "Building Flashlight sequence (C++ and Python)..."
-    cmake --build . --config Release --parallel "$(nproc)" \
-     
+    cmake --build . --config Release --parallel "$(nproc)"
+
     # Install the Python Bindings into the ACTIVE virtual environment
     log "Installing Flashlight sequence Python bindings into venv..."
     # This assumes setup.py or similar is generated in the build directory.
     cd ..
-    pip install . \
+    pip install .
 
     log "[PASS] Flashlight Python bindings installed via pip."
 

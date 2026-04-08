@@ -11,7 +11,7 @@ set -o pipefail  # Exit if any command in a pipe fails
 
 source utils.sh
 
-MODEL_PATH=$DIR_PATH/$1 # the model should be a .pt file 
+MODEL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$1" # the model should be a .pt file
 
 
 

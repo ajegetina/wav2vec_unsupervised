@@ -1,0 +1,10 @@
+- fairseq.common.user_dir=/home/ajegetina/wav2vec_unsupervised/fairseq_/examples/wav2vec/unsupervised
+- fairseq.task.data=/home/ajegetina/wav2vec_unsupervised/data/clustering/librispeech/precompute_pca512_cls128_mean_pooled
+- fairseq.common_eval.path=/home/ajegetina/coding/school/ashesi/semester-2/nlp/prosits/prosit-3/wav2vec_unsupervised/multirun/2026-04-04/17-48-33/0/checkpoint_best.pt
+- fairseq.dataset.gen_subset=valid
+- results_path=/home/ajegetina/wav2vec_unsupervised/data/transcription_phones
+- fairseq.task.text_data=/home/ajegetina/wav2vec_unsupervised/data/text/phones/
+- fairseq.dataset.batch_size=1
+- fairseq.dataset.num_workers=0
+- fairseq.dataset.required_batch_size_multiple=1
+- fairseq.dataset.gen_subset=test
