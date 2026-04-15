@@ -1,0 +1,12 @@
+- task.data=/home/ajegetina/wav2vec_unsupervised/data/clustering/librispeech/precompute_pca512_cls128_mean_pooled
+- task.text_data=/home/ajegetina/wav2vec_unsupervised/data/text/phones/
+- task.kenlm_path=/home/ajegetina/wav2vec_unsupervised/data/text/phones/lm.phones.filtered.04.bin
+- common.user_dir=/home/ajegetina/wav2vec_unsupervised/fairseq_/examples/wav2vec/unsupervised
+- model.code_penalty=6
+- model.gradient_penalty=0.5
+- model.smoothness_weight=1.5
+- common.seed=0
+- +optimizer.groups.generator.optimizer.lr=[4e-05]
+- +optimizer.groups.discriminator.optimizer.lr=[2e-05]
+- ~optimizer.groups.generator.optimizer.amsgrad=null
+- ~optimizer.groups.discriminator.optimizer.amsgrad=null
