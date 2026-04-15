@@ -12,6 +12,7 @@ Reference: Baevski et al., "Unsupervised Speech Recognition", NeurIPS 2021.
            https://arxiv.org/abs/2105.11084
 """
 
+import random
 from typing import Optional
 
 import torch
@@ -225,11 +226,12 @@ class Generator(nn.Module):
 
         logits = x  # raw logits [B, T, output_dim]
 
-        # Zero out logits at padded positions so they don't affect softmax
-        if padding_mask is not None:
-            logits = logits.masked_fill(padding_mask.unsqueeze(-1), float("-inf"))
-
+        # Compute softmax on raw logits; then zero out padded positions.
+        # (Applying -inf before softmax causes NaN when all positions in a row
+        # are masked, because softmax(-inf,...,-inf) = 0/0.)
         dense_x = torch.softmax(logits, dim=-1)  # [B, T, output_dim]
+        if padding_mask is not None:
+            dense_x = dense_x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         # Hard one-hot assignments via argmax (straight-through in backward pass)
         indices = logits.argmax(dim=-1)           # [B, T]
@@ -487,4 +489,122 @@ def code_penalty(dense_x: torch.Tensor) -> torch.Tensor:
     perplexity = entropy.exp()
     return (V - perplexity) / V
 
+
+# ---------------------------------------------------------------------------
+# Standalone training demo
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import os
+    import numpy as np
+    from tensorboardX import SummaryWriter
+
+    TB_DIR = "runs/standalone_gan"
+    writer = SummaryWriter(TB_DIR)
+    print(f"TensorBoard logs → {TB_DIR}")
+
+    DATA_ROOT = os.path.expanduser(
+        "~/wav2vec_unsupervised/data/clustering/librispeech/"
+        "precompute_pca512_cls128_mean_pooled"
+    )
+    TEXT_ROOT = os.path.expanduser(
+        "~/wav2vec_unsupervised/data/text/phones"
+    )
+    BATCH_SIZE = 16
+    MAX_LEN = 256
+    N_STEPS = 200
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {DEVICE}")
+
+    # 1. Build vocab from dict.phn.txt
+    vocab = [line.split()[0] for line in open(f"{TEXT_ROOT}/dict.phn.txt")]
+    vocab_size = len(vocab)
+    print(f"Phoneme vocab size: {vocab_size}")
+
+    # 2. Load RealData from lm.phones.filtered.txt
+    real_data = RealData(
+        phones_path=f"{TEXT_ROOT}/lm.phones.filtered.txt",
+        phoneme_vocab=vocab,
+        batch_size=BATCH_SIZE,
+        max_len=MAX_LEN,
+        device=DEVICE,
+    )
+    print(f"Real phoneme sequences loaded: {len(real_data.sequences)}")
+
+    # 3. Load audio features (flat array → list of per-sequence arrays)
+    features_flat = np.load(f"{DATA_ROOT}/train.npy")          # (N_frames, 512)
+    lengths = [int(x) for x in open(f"{DATA_ROOT}/train.lengths")]
+    sequences = []
+    offset = 0
+    for l in lengths:
+        sequences.append(features_flat[offset : offset + l])
+        offset += l
+    print(f"Audio sequences loaded: {len(sequences)}, total frames: {features_flat.shape[0]}")
+
+    # 4. Instantiate model components
+    gen  = Generator(input_dim=512, output_dim=vocab_size).to(DEVICE)
+    disc = Discriminator(input_dim=vocab_size).to(DEVICE)
+    opt_g = torch.optim.Adam(gen.parameters(),  lr=4e-5, betas=(0.5, 0.98))
+    opt_d = torch.optim.Adam(disc.parameters(), lr=2e-5, betas=(0.5, 0.98))
+    print(f"Generator params:     {sum(p.numel() for p in gen.parameters()):,}")
+    print(f"Discriminator params: {sum(p.numel() for p in disc.parameters()):,}")
+    print()
+
+    # 5. Training loop — alternate D and G updates each step
+    for step in range(1, N_STEPS + 1):
+        # Sample a minibatch of audio sequences
+        idxs = random.sample(range(len(sequences)), BATCH_SIZE)
+        batch_seqs = [sequences[i] for i in idxs]
+
+        # Pad to MAX_LEN
+        audio    = np.zeros((BATCH_SIZE, MAX_LEN, 512), dtype=np.float32)
+        pad_mask = np.ones((BATCH_SIZE, MAX_LEN), dtype=bool)
+        for i, s in enumerate(batch_seqs):
+            l = min(len(s), MAX_LEN)
+            audio[i, :l]    = s[:l]
+            pad_mask[i, :l] = False
+
+        audio_t = torch.tensor(audio).to(DEVICE)
+        pad_t   = torch.tensor(pad_mask).to(DEVICE)
+
+        gen_out          = gen(audio_t, pad_t)
+        real_x, real_msk = real_data.get_batch()
+
+        if step % 2 == 1:   # ---------- Discriminator step ----------
+            opt_d.zero_grad()
+            d_loss, _ = adversarial_loss(disc, real_x, gen_out["dense_x"].detach(),
+                                         real_msk, pad_t)
+            gp   = gradient_penalty(disc, real_x, gen_out["dense_x"].detach(), real_msk)
+            loss = d_loss + 0.5 * gp
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(disc.parameters(), 5.0)
+            opt_d.step()
+            writer.add_scalar("discriminator/d_loss", d_loss.item(), step)
+            writer.add_scalar("discriminator/gradient_penalty", gp.item(), step)
+            writer.add_scalar("discriminator/total_loss", loss.item(), step)
+            if step % 10 == 1:
+                print(f"Step {step:4d} | D_loss={d_loss.item():.4f}  GP={gp.item():.4f}")
+
+        else:               # ---------- Generator step ----------
+            opt_g.zero_grad()
+            _, g_loss = adversarial_loss(disc, real_x, gen_out["dense_x"],
+                                          real_msk, pad_t)
+            sp   = smoothness_loss(gen_out["logits"])
+            cp   = code_penalty(gen_out["dense_x"])
+            loss = g_loss + 1.5 * sp + 4.0 * cp
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), 5.0)
+            opt_g.step()
+            writer.add_scalar("generator/g_loss", g_loss.item(), step)
+            writer.add_scalar("generator/smoothness", sp.item(), step)
+            writer.add_scalar("generator/code_penalty", cp.item(), step)
+            writer.add_scalar("generator/total_loss", loss.item(), step)
+            if step % 10 == 0:
+                print(f"Step {step:4d} | G_loss={g_loss.item():.4f}  "
+                      f"Smooth={sp.item():.4f}  CodePen={cp.item():.4f}")
+
+    writer.close()
+    print()
+    print("Done. wav2vec_u_gan.py ran independently.")
+    print(f"TensorBoard: tensorboard --logdir {TB_DIR} --port 6007")
 
